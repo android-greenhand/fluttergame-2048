@@ -15,18 +15,37 @@ class GamePage extends StatefulWidget {
   GamePageState createState() => GamePageState();
 }
 
-class GamePageState extends State<GamePage> {
+class GamePageState extends State<GamePage> with SingleTickerProviderStateMixin {
   // 游戏网格，4x4的二维数组
   List<List<int>> grid = List.generate(4, (_) => List.filled(4, 0));
   // 当前游戏分数
   int score = 0;
+  int bestScore = 0; // 新增：最高分
   // 随机数生成器
   final Random random = Random();
+  
+  // 新增：动画控制器
+  late AnimationController _controller;
+  late Animation<double> _scaleAnimation;
 
   @override
   void initState() {
     super.initState();
+    // 初始化动画控制器
+    _controller = AnimationController(
+      duration: const Duration(milliseconds: 200),
+      vsync: this,
+    );
+    _scaleAnimation = Tween<double>(begin: 1.0, end: 0.95).animate(
+      CurvedAnimation(parent: _controller, curve: Curves.easeInOut),
+    );
     initGame();
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
   }
 
   /// 初始化游戏
@@ -213,18 +232,62 @@ class GamePageState extends State<GamePage> {
       context: context,
       builder: (BuildContext context) {
         return AlertDialog(
-          title: const Text('游戏结束'),
-          content: Text('最终得分: $score'),
-          actions: <Widget>[
+          backgroundColor: const Color(0xFFFAF8EF),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+          title: const Text(
+            '游戏结束',
+            style: TextStyle(
+              color: Color(0xFF776E65),
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+            ),
+            textAlign: TextAlign.center,
+          ),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                '最终得分: $score',
+                style: const TextStyle(
+                  color: Color(0xFF776E65),
+                  fontSize: 20,
+                ),
+              ),
+              if (score > bestScore) ...[
+                const SizedBox(height: 16),
+                const Text(
+                  '新纪录！',
+                  style: TextStyle(
+                    color: Color(0xFFF65E3B),
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ],
+            ],
+          ),
+          actions: [
             TextButton(
-              child: const Text('重新开始'),
               onPressed: () {
                 Navigator.of(context).pop();
                 setState(() {
+                  if (score > bestScore) {
+                    bestScore = score;
+                  }
                   score = 0;
                   initGame();
                 });
               },
+              child: const Text(
+                '重新开始',
+                style: TextStyle(
+                  color: Color(0xFF8F7A66),
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
             ),
           ],
         );
@@ -235,147 +298,264 @@ class GamePageState extends State<GamePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      backgroundColor: const Color(0xFFFAF8EF), // 米色背景
       appBar: AppBar(
-        title: const Text('2048'),
-        actions: [
-          TextButton(
-            onPressed: () {
-              setState(() {
-                score = 0;
-                initGame();
-              });
-            },
-            child: const Text('新游戏', style: TextStyle(color: Colors.white)),
+        elevation: 0,
+        backgroundColor: const Color(0xFFFAF8EF),
+        title: const Text(
+          '2048',
+          style: TextStyle(
+            color: Color(0xFF776E65),
+            fontSize: 36,
+            fontWeight: FontWeight.bold,
           ),
-        ],
+        ),
+        centerTitle: true,
       ),
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          // 计算游戏区域的大小，保持正方形
-          double gameSize = constraints.maxWidth > constraints.maxHeight ? 
-                          constraints.maxHeight * 0.7 : constraints.maxWidth * 0.9;
-          
-          return SingleChildScrollView(
-            physics: const NeverScrollableScrollPhysics(), // 禁用滚动，防止与游戏手势冲突
-            child: Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            children: [
+              // 分数面板
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  const SizedBox(height: 20),
-                  // 显示当前分数
-                  Text(
-                    '得分: $score',
-                    style: const TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                  _buildScoreBox('当前分数', score),
+                  _buildScoreBox('最高分', bestScore),
+                ],
+              ),
+              const SizedBox(height: 32),
+              // 游戏说明
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFBBADA0).withOpacity(0.2),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Text(
+                  '滑动方块，相同数字合并得到更大的数字！目标是获得2048！',
+                  style: TextStyle(
+                    color: Color(0xFF776E65),
+                    fontSize: 16,
                   ),
-                  const SizedBox(height: 20),
-                  // 游戏主区域
-                  SizedBox(
-                    width: gameSize,
-                    height: gameSize,
-                    child: GestureDetector(
-                      behavior: HitTestBehavior.opaque, // 确保空白区域也能检测手势
-                      onVerticalDragUpdate: (details) {}, // 添加空的更新回调以确保垂直拖动被识别
-                      onHorizontalDragUpdate: (details) {}, // 添加空的更新回调以确保水平拖动被识别
-                      // 处理垂直滑动
-                      onVerticalDragEnd: (details) {
-                        if (details.primaryVelocity != null) {
-                          if (details.primaryVelocity! < 0) {
-                            setState(() {
-                              move(DragDirection.up);
-                            });
-                          } else {
-                            setState(() {
-                              move(DragDirection.down);
-                            });
-                          }
-                        }
-                      },
-                      // 处理水平滑动
-                      onHorizontalDragEnd: (details) {
-                        if (details.primaryVelocity != null) {
-                          if (details.primaryVelocity! < 0) {
-                            setState(() {
-                              move(DragDirection.left);
-                            });
-                          } else {
-                            setState(() {
-                              move(DragDirection.right);
-                            });
-                          }
-                        }
-                      },
-                      child: Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          color: Colors.grey[300],
-                          borderRadius: BorderRadius.circular(10),
-                        ),
-                        // 4x4网格
+                  textAlign: TextAlign.center,
+                ),
+              ),
+              const SizedBox(height: 32),
+              // 游戏主区域
+              Expanded(
+                child: Center(
+                  child: AspectRatio(
+                    aspectRatio: 1,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFBBADA0),
+                        borderRadius: BorderRadius.circular(16),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withOpacity(0.1),
+                            blurRadius: 10,
+                            offset: const Offset(0, 5),
+                          ),
+                        ],
+                      ),
+                      padding: const EdgeInsets.all(12),
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onVerticalDragUpdate: (details) {},
+                        onHorizontalDragUpdate: (details) {},
+                        onVerticalDragEnd: (details) {
+                          _handleDrag(details.primaryVelocity!, true);
+                        },
+                        onHorizontalDragEnd: (details) {
+                          _handleDrag(details.primaryVelocity!, false);
+                        },
                         child: GridView.builder(
                           physics: const NeverScrollableScrollPhysics(),
                           gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
                             crossAxisCount: 4,
-                            mainAxisSpacing: 10,
-                            crossAxisSpacing: 10,
+                            mainAxisSpacing: 12,
+                            crossAxisSpacing: 12,
                           ),
                           itemCount: 16,
-                          itemBuilder: (context, index) {
-                            int row = index ~/ 4;
-                            int col = index % 4;
-                            int value = grid[row][col];
-                            
-                            return Container(
-                              decoration: BoxDecoration(
-                                color: getTileColor(value),
-                                borderRadius: BorderRadius.circular(5),
-                              ),
-                              child: Center(
-                                child: FittedBox(
-                                  fit: BoxFit.contain,
-                                  child: Padding(
-                                    padding: const EdgeInsets.all(4.0),
-                                    child: Text(
-                                      value == 0 ? '' : value.toString(),
-                                      style: TextStyle(
-                                        fontSize: 24,
-                                        fontWeight: FontWeight.bold,
-                                        color: value <= 4 ? Colors.grey[800] : Colors.white,
-                                      ),
-                                    ),
-                                  ),
-                                ),
-                              ),
-                            );
-                          },
+                          itemBuilder: _buildGridTile,
                         ),
                       ),
                     ),
                   ),
-                  const SizedBox(height: 20),
+                ),
+              ),
+              const SizedBox(height: 32),
+              // 控制按钮
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                children: [
+                  _buildControlButton('新游戏', Icons.refresh, () {
+                    setState(() {
+                      score = 0;
+                      initGame();
+                    });
+                  }),
+                  _buildControlButton('撤销', Icons.undo, () {
+                    // TODO: 实现撤销功能
+                  }),
                 ],
               ),
-            ),
-          );
-        },
+            ],
+          ),
+        ),
       ),
     );
   }
 
-  /// 根据数字获取对应的颜色
-  /// [value] 方块上的数字
-  Color getTileColor(int value) {
+  // 处理拖动手势
+  void _handleDrag(double velocity, bool isVertical) {
+    _controller.forward().then((_) => _controller.reverse());
+    
+    setState(() {
+      if (isVertical) {
+        if (velocity < 0) {
+          move(DragDirection.up);
+        } else {
+          move(DragDirection.down);
+        }
+      } else {
+        if (velocity < 0) {
+          move(DragDirection.left);
+        } else {
+          move(DragDirection.right);
+        }
+      }
+    });
+  }
+
+  // 构建分数面板
+  Widget _buildScoreBox(String title, int value) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFBBADA0),
+        borderRadius: BorderRadius.circular(8),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withOpacity(0.1),
+            blurRadius: 4,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Text(
+            title,
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 16,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value.toString(),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // 构建控制按钮
+  Widget _buildControlButton(String label, IconData icon, VoidCallback onPressed) {
+    return ElevatedButton.icon(
+      onPressed: onPressed,
+      icon: Icon(icon),
+      label: Text(label),
+      style: ElevatedButton.styleFrom(
+        backgroundColor: const Color(0xFF8F7A66),
+        foregroundColor: Colors.white,
+        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(8),
+        ),
+      ),
+    );
+  }
+
+  // 构建网格方块
+  Widget _buildGridTile(BuildContext context, int index) {
+    int row = index ~/ 4;
+    int col = index % 4;
+    int value = grid[row][col];
+    
+    return AnimatedBuilder(
+      animation: _scaleAnimation,
+      builder: (context, child) {
+        return Transform.scale(
+          scale: _scaleAnimation.value,
+          child: Container(
+            decoration: BoxDecoration(
+              color: _getTileBackgroundColor(value),
+              borderRadius: BorderRadius.circular(8),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withOpacity(0.05),
+                  blurRadius: 2,
+                  offset: const Offset(0, 1),
+                ),
+              ],
+            ),
+            child: Center(
+              child: value == 0
+                  ? null
+                  : Text(
+                      value.toString(),
+                      style: TextStyle(
+                        color: value <= 4 ? const Color(0xFF776E65) : Colors.white,
+                        fontSize: value < 100 ? 32 : value < 1000 ? 28 : 24,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+
+  // 获取方块背景颜色
+  Color _getTileBackgroundColor(int value) {
     switch (value) {
-      case 0: return Colors.grey[200]!;
-      case 2: return Colors.blue[100]!;
-      case 4: return Colors.blue[200]!;
-      case 8: return Colors.blue[300]!;
-      case 16: return Colors.blue[400]!;
-      case 32: return Colors.blue[500]!;
-      case 64: return Colors.blue[600]!;
-      case 128: return Colors.blue[700]!;
-      case 256: return Colors.blue[800]!;
-      case 512: return Colors.blue[900]!;
-      default: return Colors.blue[900]!;
+      case 0:
+        return const Color(0xFFCDC1B4);
+      case 2:
+        return const Color(0xFFEEE4DA);
+      case 4:
+        return const Color(0xFFEDE0C8);
+      case 8:
+        return const Color(0xFFF2B179);
+      case 16:
+        return const Color(0xFFF59563);
+      case 32:
+        return const Color(0xFFF67C5F);
+      case 64:
+        return const Color(0xFFF65E3B);
+      case 128:
+        return const Color(0xFFEDCF72);
+      case 256:
+        return const Color(0xFFEDCC61);
+      case 512:
+        return const Color(0xFFEDC850);
+      case 1024:
+        return const Color(0xFFEDC53F);
+      case 2048:
+        return const Color(0xFFEDC22E);
+      default:
+        return const Color(0xFF3C3A32);
     }
   }
 }
