@@ -416,19 +416,16 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
           ),
         ),
         actions: [
-          // 教程按钮
           IconButton(
             icon: const Icon(Icons.help_outline),
             onPressed: _showTutorial,
             tooltip: '游戏说明',
           ),
-          // 撤销按钮
           IconButton(
             icon: const Icon(Icons.undo),
             onPressed: _canUndo ? _undoMove : null,
             tooltip: '撤销',
           ),
-          // 重新开始按钮
           IconButton(
             icon: const Icon(Icons.refresh),
             onPressed: () {
@@ -439,7 +436,6 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
             },
             tooltip: '重新开始',
           ),
-          // 设置按钮
           IconButton(
             icon: const Icon(Icons.settings),
             onPressed: _showSettings,
@@ -448,42 +444,39 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
         ],
       ),
       body: SafeArea(
-        child: Center(
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 500),
-            child: Column(
-              children: [
-                const SizedBox(height: 16),
-                // 分数显示
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
-                  child: Row(
-                    children: [
-                      Expanded(child: _buildScoreBox('当前分数', score)),
-                      const SizedBox(width: 16),
-                      Expanded(child: _buildScoreBox('最高分数', bestScore)),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 16),
-                // 游戏说明
-                Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 24),
-                  child: Text(
-                    '滑动手指合并相同的数字，努力达到2048！',
-                    style: TextStyle(
-                      color: Colors.grey[700],
-                      fontSize: 16,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final maxSize = constraints.maxWidth > 500 ? 500.0 : constraints.maxWidth;
+            final padding = (constraints.maxWidth - maxSize) / 2;
+            
+            return Center(
+              child: Container(
+                constraints: BoxConstraints(maxWidth: maxSize),
+                padding: EdgeInsets.symmetric(horizontal: padding > 0 ? padding : 16),
+                child: Column(
+                  children: [
+                    const SizedBox(height: 16),
+                    // 分数显示
+                    Row(
+                      children: [
+                        Expanded(child: _buildScoreBox('当前分数', score)),
+                        const SizedBox(width: 16),
+                        Expanded(child: _buildScoreBox('最高分数', bestScore)),
+                      ],
                     ),
-                    textAlign: TextAlign.center,
-                  ),
-                ),
-                const SizedBox(height: 24),
-                // 游戏网格
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.all(24.0),
-                    child: AspectRatio(
+                    const SizedBox(height: 16),
+                    // 游戏说明
+                    Text(
+                      '滑动手指合并相同的数字，努力达到2048！',
+                      style: TextStyle(
+                        color: Colors.grey[700],
+                        fontSize: 16,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    // 游戏网格
+                    AspectRatio(
                       aspectRatio: 1,
                       child: Container(
                         decoration: BoxDecoration(
@@ -581,12 +574,12 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
                         ),
                       ),
                     ),
-                  ),
+                    const SizedBox(height: 16),
+                  ],
                 ),
-                const SizedBox(height: 16),
-              ],
-            ),
-          ),
+              ),
+            );
+          },
         ),
       ),
     );
