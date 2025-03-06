@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 import 'dart:math';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:convert';
+import 'audio_manager.dart';
+import 'achievement_manager.dart';
 
 /// 方块动画状态类
 class TileAnimation {
@@ -31,21 +35,37 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
   List<List<int>> grid = List.generate(4, (_) => List.filled(4, 0));
   // 当前游戏分数
   int score = 0;
-  int bestScore = 0; // 新增：最高分
+  int bestScore = 0; // 最高分
   // 随机数生成器
   final Random random = Random();
   
-  // 新增：动画相关变量
+  // 动画相关变量
   late AnimationController _slideController;
   late AnimationController _scaleController;
   late Animation<double> _scaleAnimation;
   List<TileAnimation> _animations = [];
   bool _isAnimating = false;
 
-  // 新增：历史记录，用于撤销功能
+  // 历史记录，用于撤销功能
   List<List<int>> _previousGrid = [];
   int _previousScore = 0;
   bool _canUndo = false;
+
+  // SharedPreferences的键名常量
+  static const String _keyBestScore = 'bestScore';
+  static const String _keyCurrentScore = 'currentScore';
+  static const String _keyGrid = 'grid';
+
+  // 游戏状态追踪变量
+  Duration _gameTime = Duration.zero;
+  int _moves = 0;
+  List<String> _moveHistory = [];
+  bool _usedUndo = false;
+  late DateTime _gameStartTime;
+
+  // 管理器实例
+  final AudioManager _audioManager = AudioManager();
+  final AchievementManager _achievementManager = AchievementManager();
 
   @override
   void initState() {
@@ -62,14 +82,65 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
     _scaleAnimation = Tween<double>(begin: 1.0, end: 0.95).animate(
       CurvedAnimation(parent: _scaleController, curve: Curves.easeInOut),
     );
-    initGame();
+    
+    // 初始化音频和成就系统
+    _initializeGame();
+  }
+
+  Future<void> _initializeGame() async {
+    await _audioManager.init();
+    await _achievementManager.init();
+    await _loadGameData();
+    _gameStartTime = DateTime.now();
+    _audioManager.playBackgroundMusic();
   }
 
   @override
   void dispose() {
     _slideController.dispose();
     _scaleController.dispose();
+    _audioManager.dispose();
     super.dispose();
+  }
+
+  /// 加载保存的游戏数据
+  Future<void> _loadGameData() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      
+      setState(() {
+        // 加载最高分
+        bestScore = prefs.getInt(_keyBestScore) ?? 0;
+        
+        // 加载当前分数
+        score = prefs.getInt(_keyCurrentScore) ?? 0;
+        
+        // 加载网格数据
+        String? gridJson = prefs.getString(_keyGrid);
+        if (gridJson != null) {
+          List<dynamic> gridData = json.decode(gridJson);
+          grid = gridData.map((row) => List<int>.from(row)).toList();
+        } else {
+          initGame();
+        }
+      });
+    } catch (e) {
+      print('加载游戏数据时出错: $e');
+      initGame();
+    }
+  }
+
+  /// 保存游戏数据
+  Future<void> _saveGameData() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      
+      await prefs.setInt(_keyBestScore, bestScore);
+      await prefs.setInt(_keyCurrentScore, score);
+      await prefs.setString(_keyGrid, json.encode(grid));
+    } catch (e) {
+      print('保存游戏数据时出错: $e');
+    }
   }
 
   /// 初始化游戏
@@ -78,6 +149,7 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
     grid = List.generate(4, (_) => List.filled(4, 0));
     addNewTile();
     addNewTile();
+    _saveGameData(); // 保存初始状态
   }
 
   /// 在空位置添加新的数字
@@ -132,6 +204,7 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
     // 如果发生了移动，添加新的数字并检查游戏是否结束
     if (moved) {
       addNewTile();
+      _saveGameData(); // 保存游戏状态
       if (isGameOver()) {
         showGameOverDialog();
       }
@@ -147,6 +220,7 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
       if (!listEquals(row, newRow)) {
         moved = true;
         grid[i] = newRow;
+        _audioManager.playMergeSound();
       }
     }
     return moved;
@@ -162,6 +236,7 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
       if (!listEquals(grid[i], newRow)) {
         moved = true;
         grid[i] = newRow;
+        _audioManager.playMergeSound();
       }
     }
     return moved;
@@ -176,9 +251,11 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
       List<int> newColumn = mergeTiles(column);
       if (!listEquals(column, newColumn)) {
         moved = true;
+        // 更新列数据
         for (int i = 0; i < 4; i++) {
           grid[i][j] = newColumn[i];
         }
+        _audioManager.playMergeSound();
       }
     }
     return moved;
@@ -188,47 +265,48 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
   bool moveDown() {
     bool moved = false;
     for (int j = 0; j < 4; j++) {
-      // 获取每一列并反转，执行合并操作后再反转回来
-      List<int> column = [grid[3][j], grid[2][j], grid[1][j], grid[0][j]];
-      List<int> newColumn = mergeTiles(column);
-      if (!listEquals(column, newColumn)) {
+      // 获取每一列并反转
+      List<int> column = [grid[0][j], grid[1][j], grid[2][j], grid[3][j]].reversed.toList();
+      List<int> newColumn = mergeTiles(column).reversed.toList();
+      if (!listEquals([grid[0][j], grid[1][j], grid[2][j], grid[3][j]], newColumn)) {
         moved = true;
+        // 更新列数据
         for (int i = 0; i < 4; i++) {
-          grid[3-i][j] = newColumn[i];
+          grid[i][j] = newColumn[i];
         }
+        _audioManager.playMergeSound();
       }
     }
     return moved;
   }
 
   /// 合并相同数字的方块
-  /// [line] 要合并的一行或一列数字
   /// 返回合并后的新数组
   List<int> mergeTiles(List<int> line) {
-    List<int> newLine = List.filled(4, 0);
+    // 移除所有0
+    List<int> nonZeros = line.where((x) => x != 0).toList();
+    List<int> result = List.filled(4, 0);
     int index = 0;
     
-    // 移除所有0，只保留非0数字
-    List<int> numbers = line.where((x) => x != 0).toList();
-    
     // 合并相邻的相同数字
-    for (int i = 0; i < numbers.length; i++) {
-      if (i + 1 < numbers.length && numbers[i] == numbers[i + 1]) {
-        // 相同数字合并，分数增加
-        newLine[index] = numbers[i] * 2;
-        score += numbers[i] * 2;
-        i++; // 跳过下一个数字
+    for (int i = 0; i < nonZeros.length; i++) {
+      if (i < nonZeros.length - 1 && nonZeros[i] == nonZeros[i + 1]) {
+        result[index] = nonZeros[i] * 2;
+        score += nonZeros[i] * 2;
+        if (score > bestScore) {
+          bestScore = score;
+        }
+        i++;
       } else {
-        newLine[index] = numbers[i];
+        result[index] = nonZeros[i];
       }
       index++;
     }
     
-    return newLine;
+    return result;
   }
 
   /// 检查游戏是否结束
-  /// 当没有空格且没有可以合并的相邻数字时，游戏结束
   bool isGameOver() {
     // 检查是否有空格
     for (int i = 0; i < 4; i++) {
@@ -236,22 +314,23 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
         if (grid[i][j] == 0) return false;
       }
     }
-
-    // 检查是否有可以合并的相邻数字
+    
+    // 检查是否有相邻的相同数字
     for (int i = 0; i < 4; i++) {
-      for (int j = 0; j < 3; j++) {
-        // 检查水平方向
-        if (grid[i][j] == grid[i][j + 1]) return false;
-        // 检查垂直方向
-        if (grid[j][i] == grid[j + 1][i]) return false;
+      for (int j = 0; j < 4; j++) {
+        // 检查右边
+        if (j < 3 && grid[i][j] == grid[i][j + 1]) return false;
+        // 检查下边
+        if (i < 3 && grid[i][j] == grid[i + 1][j]) return false;
       }
     }
-
+    
     return true;
   }
 
   /// 显示游戏结束对话框
   void showGameOverDialog() {
+    _audioManager.playGameOverSound();
     showDialog(
       context: context,
       builder: (BuildContext context) {
@@ -294,7 +373,7 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
           ),
           actions: [
             TextButton(
-              onPressed: () {
+              onPressed: () async {
                 Navigator.of(context).pop();
                 setState(() {
                   if (score > bestScore) {
@@ -304,6 +383,7 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
                   _canUndo = false;
                   initGame();
                 });
+                await _saveGameData(); // 保存新的游戏状态
               },
               child: const Text(
                 '重新开始',
@@ -324,103 +404,199 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFFFAF8EF),
-      body: SafeArea(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _buildHeader(),
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.all(16.0),
-                child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    _buildScorePanel(),
-                    const SizedBox(height: 32),
-                    _buildGameBoard(),
-                    const SizedBox(height: 32),
-                    _buildControlPanel(),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  // 构建头部
-  Widget _buildHeader() {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: const [
-              Text(
-                '2048',
-                style: TextStyle(
-                  color: Color(0xFF776E65),
-                  fontSize: 48,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              Text(
-                '合并相同数字，获得2048！',
-                style: TextStyle(
-                  color: Color(0xFF776E65),
-                  fontSize: 14,
-                ),
-              ),
-            ],
+      appBar: AppBar(
+        backgroundColor: const Color(0xFF8F7A66),
+        foregroundColor: Colors.white,
+        elevation: 4,
+        title: const Text(
+          '2048',
+          style: TextStyle(
+            fontSize: 28,
+            fontWeight: FontWeight.bold,
           ),
-          Row(
-            children: [
-              IconButton(
-                icon: const Icon(Icons.help_outline, color: Color(0xFF776E65)),
-                onPressed: _showTutorial,
-                tooltip: '游戏说明',
-              ),
-              IconButton(
-                icon: const Icon(Icons.settings_outlined, color: Color(0xFF776E65)),
-                onPressed: _showSettings,
-                tooltip: '设置',
-              ),
-            ],
+        ),
+        actions: [
+          // 教程按钮
+          IconButton(
+            icon: const Icon(Icons.help_outline),
+            onPressed: _showTutorial,
+            tooltip: '游戏说明',
+          ),
+          // 撤销按钮
+          IconButton(
+            icon: const Icon(Icons.undo),
+            onPressed: _canUndo ? _undoMove : null,
+            tooltip: '撤销',
+          ),
+          // 重新开始按钮
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () {
+              setState(() {
+                score = 0;
+                initGame();
+              });
+            },
+            tooltip: '重新开始',
+          ),
+          // 设置按钮
+          IconButton(
+            icon: const Icon(Icons.settings),
+            onPressed: _showSettings,
+            tooltip: '设置',
           ),
         ],
       ),
-    );
-  }
-
-  // 构建分数面板
-  Widget _buildScorePanel() {
-    return Row(
-      children: [
-        Expanded(
-          child: _buildScoreBox(
-            '当前分数',
-            score,
-            hasAnimation: true,
+      body: SafeArea(
+        child: Center(
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 500),
+            child: Column(
+              children: [
+                const SizedBox(height: 16),
+                // 分数显示
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: Row(
+                    children: [
+                      Expanded(child: _buildScoreBox('当前分数', score)),
+                      const SizedBox(width: 16),
+                      Expanded(child: _buildScoreBox('最高分数', bestScore)),
+                    ],
+                  ),
+                ),
+                const SizedBox(height: 16),
+                // 游戏说明
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 24),
+                  child: Text(
+                    '滑动手指合并相同的数字，努力达到2048！',
+                    style: TextStyle(
+                      color: Colors.grey[700],
+                      fontSize: 16,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                // 游戏网格
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.all(24.0),
+                    child: AspectRatio(
+                      aspectRatio: 1,
+                      child: Container(
+                        decoration: BoxDecoration(
+                          color: const Color(0xFFBBADA0),
+                          borderRadius: BorderRadius.circular(12),
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withOpacity(0.2),
+                              blurRadius: 10,
+                              offset: const Offset(0, 5),
+                            ),
+                          ],
+                        ),
+                        child: Padding(
+                          padding: const EdgeInsets.all(8.0),
+                          child: GestureDetector(
+                            onVerticalDragEnd: (details) {
+                              if (details.velocity.pixelsPerSecond.dy < -250) {
+                                _saveStateForUndo();
+                                setState(() {
+                                  move(DragDirection.up);
+                                  _moves++;
+                                  _moveHistory.add('up');
+                                  _checkAchievements();
+                                });
+                              } else if (details.velocity.pixelsPerSecond.dy > 250) {
+                                _saveStateForUndo();
+                                setState(() {
+                                  move(DragDirection.down);
+                                  _moves++;
+                                  _moveHistory.add('down');
+                                  _checkAchievements();
+                                });
+                              }
+                            },
+                            onHorizontalDragEnd: (details) {
+                              if (details.velocity.pixelsPerSecond.dx < -250) {
+                                _saveStateForUndo();
+                                setState(() {
+                                  move(DragDirection.left);
+                                  _moves++;
+                                  _moveHistory.add('left');
+                                  _checkAchievements();
+                                });
+                              } else if (details.velocity.pixelsPerSecond.dx > 250) {
+                                _saveStateForUndo();
+                                setState(() {
+                                  move(DragDirection.right);
+                                  _moves++;
+                                  _moveHistory.add('right');
+                                  _checkAchievements();
+                                });
+                              }
+                            },
+                            child: GridView.builder(
+                              physics: const NeverScrollableScrollPhysics(),
+                              gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                                crossAxisCount: 4,
+                                mainAxisSpacing: 8,
+                                crossAxisSpacing: 8,
+                                childAspectRatio: 1,
+                              ),
+                              itemCount: 16,
+                              itemBuilder: (context, index) {
+                                int row = index ~/ 4;
+                                int col = index % 4;
+                                int value = grid[row][col];
+                                
+                                return Container(
+                                  decoration: BoxDecoration(
+                                    color: _getTileColor(value),
+                                    borderRadius: BorderRadius.circular(8),
+                                    boxShadow: [
+                                      BoxShadow(
+                                        color: Colors.black.withOpacity(0.1),
+                                        blurRadius: 2,
+                                        offset: const Offset(0, 2),
+                                      ),
+                                    ],
+                                  ),
+                                  child: Center(
+                                    child: Text(
+                                      value > 0 ? value.toString() : '',
+                                      style: TextStyle(
+                                        fontSize: value > 512 ? 20 : 24,
+                                        fontWeight: FontWeight.bold,
+                                        color: value <= 4 ? const Color(0xFF776E65) : Colors.white,
+                                      ),
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+              ],
+            ),
           ),
         ),
-        const SizedBox(width: 16),
-        Expanded(
-          child: _buildScoreBox('最高分', bestScore),
-        ),
-      ],
+      ),
     );
   }
 
-  // 构建分数盒子
-  Widget _buildScoreBox(String title, int value, {bool hasAnimation = false}) {
+  Widget _buildScoreBox(String label, int value) {
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 16),
+      padding: const EdgeInsets.symmetric(vertical: 12),
       decoration: BoxDecoration(
-        color: const Color(0xFFBBADA0),
+        color: const Color(0xFF8F7A66),
         borderRadius: BorderRadius.circular(12),
         boxShadow: [
           BoxShadow(
@@ -434,30 +610,20 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(
-            title,
+            label,
             style: const TextStyle(
               color: Colors.white,
-              fontSize: 16,
+              fontSize: 14,
               fontWeight: FontWeight.w500,
             ),
           ),
-          const SizedBox(height: 8),
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 200),
-            transitionBuilder: (Widget child, Animation<double> animation) {
-              return ScaleTransition(
-                scale: animation,
-                child: child,
-              );
-            },
-            child: Text(
-              value.toString(),
-              key: ValueKey<int>(value),
-              style: const TextStyle(
-                color: Colors.white,
-                fontSize: 32,
-                fontWeight: FontWeight.bold,
-              ),
+          const SizedBox(height: 4),
+          Text(
+            value.toString(),
+            style: const TextStyle(
+              color: Colors.white,
+              fontSize: 28,
+              fontWeight: FontWeight.bold,
             ),
           ),
         ],
@@ -465,139 +631,7 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
     );
   }
 
-  // 构建游戏面板
-  Widget _buildGameBoard() {
-    return AspectRatio(
-      aspectRatio: 1,
-      child: Container(
-        decoration: BoxDecoration(
-          color: const Color(0xFFBBADA0),
-          borderRadius: BorderRadius.circular(16),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withOpacity(0.15),
-              blurRadius: 12,
-              offset: const Offset(0, 6),
-            ),
-          ],
-        ),
-        padding: const EdgeInsets.all(12),
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onVerticalDragEnd: (details) {
-            if (!_isAnimating) {
-              _handleDrag(details.primaryVelocity!, true);
-            }
-          },
-          onHorizontalDragEnd: (details) {
-            if (!_isAnimating) {
-              _handleDrag(details.primaryVelocity!, false);
-            }
-          },
-          child: GridView.builder(
-            physics: const NeverScrollableScrollPhysics(),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 4,
-              mainAxisSpacing: 12,
-              crossAxisSpacing: 12,
-            ),
-            itemCount: 16,
-            itemBuilder: _buildGridTile,
-          ),
-        ),
-      ),
-    );
-  }
-
-  // 构建控制面板
-  Widget _buildControlPanel() {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-      children: [
-        _buildControlButton(
-          '新游戏',
-          Icons.refresh,
-          _startNewGame,
-          const Color(0xFF8F7A66),
-        ),
-        _buildControlButton(
-          '撤销',
-          Icons.undo,
-          _canUndo ? _undoMove : null,
-          const Color(0xFFBBADA0),
-        ),
-      ],
-    );
-  }
-
-  // 构建控制按钮
-  Widget _buildControlButton(
-    String label,
-    IconData icon,
-    VoidCallback? onPressed,
-    Color color,
-  ) {
-    return ElevatedButton.icon(
-      onPressed: onPressed,
-      icon: Icon(icon),
-      label: Text(label),
-      style: ElevatedButton.styleFrom(
-        backgroundColor: color,
-        foregroundColor: Colors.white,
-        padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(8),
-        ),
-        elevation: 4,
-      ),
-    );
-  }
-
-  // 构建网格方块
-  Widget _buildGridTile(BuildContext context, int index) {
-    int row = index ~/ 4;
-    int col = index % 4;
-    int value = grid[row][col];
-    
-    return AnimatedBuilder(
-      animation: _scaleAnimation,
-      builder: (context, child) {
-        return Transform.scale(
-          scale: _scaleAnimation.value,
-          child: Container(
-            decoration: BoxDecoration(
-              color: _getTileBackgroundColor(value),
-              borderRadius: BorderRadius.circular(8),
-              boxShadow: [
-                if (value > 0)
-                  BoxShadow(
-                    color: Colors.black.withOpacity(0.1),
-                    blurRadius: 2,
-                    offset: const Offset(0, 1),
-                  ),
-              ],
-            ),
-            child: Center(
-              child: value == 0
-                  ? null
-                  : AnimatedDefaultTextStyle(
-                      duration: const Duration(milliseconds: 200),
-                      style: TextStyle(
-                        color: value <= 4 ? const Color(0xFF776E65) : Colors.white,
-                        fontSize: value < 100 ? 32 : value < 1000 ? 28 : 24,
-                        fontWeight: FontWeight.bold,
-                      ),
-                      child: Text(value.toString()),
-                    ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-
-  // 获取方块背景颜色
-  Color _getTileBackgroundColor(int value) {
+  Color _getTileColor(int value) {
     switch (value) {
       case 0:
         return const Color(0xFFCDC1B4);
@@ -675,28 +709,79 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
       ),
-      builder: (context) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.delete_outline),
-              title: const Text('重置最高分'),
-              onTap: () {
-                setState(() => bestScore = 0);
-                Navigator.pop(context);
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.info_outline),
-              title: const Text('关于游戏'),
-              onTap: () {
-                Navigator.pop(context);
-                _showAboutDialog();
-              },
-            ),
-          ],
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => Padding(
+          padding: const EdgeInsets.symmetric(vertical: 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // 音频控制
+              ListTile(
+                leading: Icon(
+                  _audioManager.isMuted ? Icons.volume_off : Icons.volume_up,
+                ),
+                title: const Text('声音'),
+                trailing: Switch(
+                  value: !_audioManager.isMuted,
+                  onChanged: (value) {
+                    setState(() {
+                      _audioManager.toggleMute();
+                    });
+                  },
+                ),
+              ),
+              if (!_audioManager.isMuted) ...[
+                ListTile(
+                  title: const Text('背景音乐音量'),
+                  subtitle: Slider(
+                    value: _audioManager.bgmVolume,
+                    onChanged: (value) {
+                      setState(() {
+                        _audioManager.setBgmVolume(value);
+                      });
+                    },
+                  ),
+                ),
+                ListTile(
+                  title: const Text('音效音量'),
+                  subtitle: Slider(
+                    value: _audioManager.sfxVolume,
+                    onChanged: (value) {
+                      setState(() {
+                        _audioManager.setSfxVolume(value);
+                      });
+                    },
+                  ),
+                ),
+              ],
+              const Divider(),
+              // 其他设置选项
+              ListTile(
+                leading: const Icon(Icons.delete_outline),
+                title: const Text('重置最高分'),
+                onTap: () {
+                  setState(() => bestScore = 0);
+                  Navigator.pop(context);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.emoji_events_outlined),
+                title: const Text('成就'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _showAchievementsDialog();
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.info_outline),
+                title: const Text('关于游戏'),
+                onTap: () {
+                  Navigator.pop(context);
+                  _showAboutDialog();
+                },
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -735,43 +820,6 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
     );
   }
 
-  // 开始新游戏
-  void _startNewGame() {
-    if (score > 0) {
-      showDialog(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('开始新游戏'),
-          content: const Text('确定要放弃当前游戏开始新游戏吗？'),
-          actions: [
-            TextButton(
-              child: const Text('取消'),
-              onPressed: () => Navigator.pop(context),
-            ),
-            TextButton(
-              child: const Text('确定'),
-              onPressed: () {
-                Navigator.pop(context);
-                setState(() {
-                  if (score > bestScore) {
-                    bestScore = score;
-                  }
-                  score = 0;
-                  _canUndo = false;
-                  initGame();
-                });
-              },
-            ),
-          ],
-        ),
-      );
-    } else {
-      setState(() {
-        initGame();
-      });
-    }
-  }
-
   // 撤销移动
   void _undoMove() {
     if (_canUndo) {
@@ -779,34 +827,124 @@ class GamePageState extends State<GamePage> with TickerProviderStateMixin {
         grid = List.generate(4, (i) => List.from(_previousGrid[i]));
         score = _previousScore;
         _canUndo = false;
+        _usedUndo = true;
       });
+      _saveGameData();
     }
   }
 
-  // 处理拖动
-  void _handleDrag(double velocity, bool isVertical) {
-    _scaleController.forward().then((_) => _scaleController.reverse());
-    
-    // 保存当前状态用于撤销
+  // 保存状态用于撤销
+  void _saveStateForUndo() {
     _previousGrid = List.generate(4, (i) => List.from(grid[i]));
     _previousScore = score;
     _canUndo = true;
+  }
 
-    setState(() {
-      if (isVertical) {
-        if (velocity < 0) {
-          move(DragDirection.up);
-        } else {
-          move(DragDirection.down);
-        }
-      } else {
-        if (velocity < 0) {
-          move(DragDirection.left);
-        } else {
-          move(DragDirection.right);
-        }
-      }
-    });
+  /// Check for achievements and easter eggs
+  Future<void> _checkAchievements() async {
+    _gameTime = DateTime.now().difference(_gameStartTime);
+    
+    final newAchievements = await _achievementManager.checkAchievements(
+      score: score,
+      moves: _moves,
+      gameTime: _gameTime,
+      usedUndo: _usedUndo,
+      grid: grid,
+    );
+
+    final newEasterEggs = await _achievementManager.checkEasterEggs(
+      moveHistory: _moveHistory,
+      grid: grid,
+    );
+
+    // Show achievement notifications
+    for (String achievement in [...newAchievements, ...newEasterEggs]) {
+      _showAchievementNotification(achievement);
+      _audioManager.playAchievementSound();
+    }
+  }
+
+  /// Show achievement notification
+  void _showAchievementNotification(String achievement) {
+    final descriptions = {
+      ..._achievementManager.achievementDescriptions,
+      ..._achievementManager.easterEggDescriptions,
+    };
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Row(
+          children: [
+            const Icon(Icons.emoji_events, color: Colors.amber),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Achievement Unlocked: ${descriptions[achievement]}',
+                style: const TextStyle(color: Colors.white),
+              ),
+            ),
+          ],
+        ),
+        backgroundColor: const Color(0xFF776E65),
+        duration: const Duration(seconds: 3),
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(10),
+        ),
+      ),
+    );
+  }
+
+  // 显示成就对话框
+  void _showAchievementsDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('成就'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ..._buildAchievementList(_achievementManager.achievementDescriptions),
+              const Divider(height: 32),
+              const Text(
+                '彩蛋',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              const SizedBox(height: 8),
+              ..._buildAchievementList(_achievementManager.easterEggDescriptions),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            child: const Text('关闭'),
+            onPressed: () => Navigator.pop(context),
+          ),
+        ],
+      ),
+    );
+  }
+
+  List<Widget> _buildAchievementList(Map<String, String> achievements) {
+    return achievements.entries.map((entry) {
+      final bool isUnlocked = _achievementManager.isAchievementUnlocked(entry.key);
+      return ListTile(
+        leading: Icon(
+          isUnlocked ? Icons.emoji_events : Icons.lock_outline,
+          color: isUnlocked ? Colors.amber : Colors.grey,
+        ),
+        title: Text(
+          entry.value,
+          style: TextStyle(
+            color: isUnlocked ? null : Colors.grey,
+          ),
+        ),
+      );
+    }).toList();
   }
 }
 
