@@ -4,12 +4,15 @@
 
 ## 功能特点
 
+![demo](https://github.com/android-greenhand/fluttergame-2048/master/flutterdemo/output.gif)
+
 ### 核心游戏功能
 - 经典的 4x4 游戏网格
 - 流畅的滑动操作体验
 - 智能的方块合并机制
 - 实时分数计算
 - 最高分记录
+
 
 ### 增强功能
 - 成就系统
